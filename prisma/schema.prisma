@@ -1,0 +1,313 @@
+// Forjas · Hierro Hecho Arte — esquema de datos
+// Convención (igual que LegalDocs): modelos en PascalCase, campos en camelCase,
+// tablas en UPPER_SNAKE y columnas con prefijo de tipo + sufijo del modelo.
+// Prefijos: UID_ (ids y FKs), STR_, NUM_ (Int/Decimal), BOOL_, DTM_, JSON_.
+
+generator client {
+    provider               = "prisma-client"
+    output                 = "../generated/prisma"
+    moduleFormat           = "esm"
+    importFileExtension    = "js"
+}
+
+datasource db {
+    provider = "postgresql"
+}
+
+// ─── ENUMS ─────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+    ADMIN    // todo el panel
+    EDITOR   // carga productos, fotos y proyectos; no toca precios ni pedidos
+    CUSTOMER // comprador con cuenta
+}
+
+enum ProductType {
+    CATALOG      // precio fijo, se compra en el carrito
+    CONFIGURABLE // se diseña en el configurador 3D
+    QUOTE        // a medida, se cotiza
+}
+
+enum ProductStatus {
+    DRAFT
+    PUBLISHED
+    ARCHIVED
+}
+
+// ─── USUARIOS Y SESIÓN ─────────────────────────────────────────────────────────
+
+model User {
+    id           String    @id @default(uuid()) @map("UID_USER")
+    numId        Int       @unique @default(autoincrement()) @map("NUM_ID_USER")
+    email        String    @unique @map("STR_EMAIL_USER")
+    passwordHash String    @map("STR_PASSWORD_HASH_USER")
+    firstName    String    @map("STR_FIRST_NAME_USER")
+    lastName     String    @map("STR_LAST_NAME_USER")
+    phone        String?   @map("STR_PHONE_USER")
+    role         UserRole  @default(CUSTOMER) @map("STR_ROLE_USER")
+    isActive     Boolean   @default(true) @map("BOOL_IS_ACTIVE_USER")
+    lastLoginAt  DateTime? @map("DTM_LAST_LOGIN_AT_USER")
+    deletedAt    DateTime? @map("DTM_DELETED_AT_USER")
+    createdAt    DateTime  @default(now()) @map("DTM_CREATED_AT")
+    updatedAt    DateTime  @updatedAt @map("DTM_UPDATED_AT")
+
+    refreshTokens RefreshToken[]
+
+    @@index([role])
+    @@index([deletedAt])
+    @@map("USER")
+}
+
+model RefreshToken {
+    id        String    @id @default(uuid()) @map("UID_REFRESH_TOKEN")
+    userId    String    @map("UID_USER")
+    tokenHash String    @map("STR_TOKEN_HASH_REFRESH_TOKEN")
+    expiresAt DateTime  @map("DTM_EXPIRES_AT_REFRESH_TOKEN")
+    revokedAt DateTime? @map("DTM_REVOKED_AT_REFRESH_TOKEN")
+    userAgent String?   @map("STR_USER_AGENT_REFRESH_TOKEN")
+    ipAddress String?   @map("STR_IP_ADDRESS_REFRESH_TOKEN")
+    createdAt DateTime  @default(now()) @map("DTM_CREATED_AT")
+
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@index([userId])
+    @@map("REFRESH_TOKEN")
+}
+
+// ─── CATÁLOGO ──────────────────────────────────────────────────────────────────
+
+model Category {
+    id          String    @id @default(uuid()) @map("UID_CATEGORY")
+    numId       Int       @unique @default(autoincrement()) @map("NUM_ID_CATEGORY")
+    name        String    @map("STR_NAME_CATEGORY")
+    slug        String    @unique @map("STR_SLUG_CATEGORY")
+    description String?   @map("STR_DESCRIPTION_CATEGORY")
+    sortOrder   Int       @default(0) @map("NUM_SORT_ORDER_CATEGORY")
+    isActive    Boolean   @default(true) @map("BOOL_IS_ACTIVE_CATEGORY")
+    deletedAt   DateTime? @map("DTM_DELETED_AT_CATEGORY")
+    createdAt   DateTime  @default(now()) @map("DTM_CREATED_AT")
+    updatedAt   DateTime  @updatedAt @map("DTM_UPDATED_AT")
+
+    products Product[]
+
+    @@index([deletedAt])
+    @@map("CATEGORY")
+}
+
+model Product {
+    id             String        @id @default(uuid()) @map("UID_PRODUCT")
+    numId          Int           @unique @default(autoincrement()) @map("NUM_ID_PRODUCT")
+    categoryId     String        @map("UID_CATEGORY")
+    name           String        @map("STR_NAME_PRODUCT")
+    slug           String        @unique @map("STR_SLUG_PRODUCT")
+    summary        String        @map("STR_SUMMARY_PRODUCT")
+    description    String?       @map("STR_DESCRIPTION_PRODUCT")
+    type           ProductType   @default(CATALOG) @map("STR_TYPE_PRODUCT")
+    status         ProductStatus @default(DRAFT) @map("STR_STATUS_PRODUCT")
+    // Precio en COP. Nulo cuando la pieza es a medida (QUOTE / CONFIGURABLE).
+    price          Decimal?      @db.Decimal(12, 0) @map("NUM_PRICE_PRODUCT")
+    compareAtPrice Decimal?      @db.Decimal(12, 0) @map("NUM_COMPARE_AT_PRICE_PRODUCT")
+    currency       String        @default("COP") @map("STR_CURRENCY_PRODUCT")
+    stock          Int?          @map("NUM_STOCK_PRODUCT")
+    leadTimeDays   Int?          @map("NUM_LEAD_TIME_DAYS_PRODUCT")
+    weightKg       Decimal?      @db.Decimal(8, 2) @map("NUM_WEIGHT_KG_PRODUCT")
+    dimensions     Json?         @map("JSON_DIMENSIONS_PRODUCT")
+    isHighlighted  Boolean       @default(false) @map("BOOL_IS_HIGHLIGHTED_PRODUCT")
+    sortOrder      Int           @default(0) @map("NUM_SORT_ORDER_PRODUCT")
+    model3dUrl     String?       @map("STR_MODEL_3D_URL_PRODUCT")
+    deletedAt      DateTime?     @map("DTM_DELETED_AT_PRODUCT")
+    createdAt      DateTime      @default(now()) @map("DTM_CREATED_AT")
+    updatedAt      DateTime      @updatedAt @map("DTM_UPDATED_AT")
+
+    category       Category         @relation(fields: [categoryId], references: [id])
+    images         ProductImage[]
+    variants       ProductVariant[]
+    primaryIn      FeaturedPiece[]  @relation("FeaturedPrimary")
+    secondaryIn    FeaturedPiece[]  @relation("FeaturedSecondary")
+
+    @@index([categoryId])
+    @@index([status, deletedAt])
+    @@index([isHighlighted])
+    @@map("PRODUCT")
+}
+
+// Variantes por acabado, tamaño o madera. El precio final = precio base + delta.
+model ProductVariant {
+    id         String   @id @default(uuid()) @map("UID_PRODUCT_VARIANT")
+    productId  String   @map("UID_PRODUCT")
+    name       String   @map("STR_NAME_PRODUCT_VARIANT")
+    sku        String   @unique @map("STR_SKU_PRODUCT_VARIANT")
+    attributes Json     @map("JSON_ATTRIBUTES_PRODUCT_VARIANT")
+    priceDelta Decimal  @default(0) @db.Decimal(12, 0) @map("NUM_PRICE_DELTA_PRODUCT_VARIANT")
+    stock      Int?     @map("NUM_STOCK_PRODUCT_VARIANT")
+    isActive   Boolean  @default(true) @map("BOOL_IS_ACTIVE_PRODUCT_VARIANT")
+    sortOrder  Int      @default(0) @map("NUM_SORT_ORDER_PRODUCT_VARIANT")
+    createdAt  DateTime @default(now()) @map("DTM_CREATED_AT")
+    updatedAt  DateTime @updatedAt @map("DTM_UPDATED_AT")
+
+    product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+    @@index([productId])
+    @@map("PRODUCT_VARIANT")
+}
+
+model ProductImage {
+    id         String   @id @default(uuid()) @map("UID_PRODUCT_IMAGE")
+    productId  String   @map("UID_PRODUCT")
+    url        String   @map("STR_URL_PRODUCT_IMAGE")
+    storageKey String?  @map("STR_STORAGE_KEY_PRODUCT_IMAGE") // nulo si la imagen no vive en R2 (seed)
+    alt        String   @map("STR_ALT_PRODUCT_IMAGE")
+    width      Int      @map("NUM_WIDTH_PRODUCT_IMAGE")
+    height     Int      @map("NUM_HEIGHT_PRODUCT_IMAGE")
+    sortOrder  Int      @default(0) @map("NUM_SORT_ORDER_PRODUCT_IMAGE")
+    createdAt  DateTime @default(now()) @map("DTM_CREATED_AT")
+
+    product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+    @@index([productId])
+    @@map("PRODUCT_IMAGE")
+}
+
+// Piezas del hero del inicio: una obra con dos productos asociados para el riel
+model FeaturedPiece {
+    id                 String   @id @default(uuid()) @map("UID_FEATURED_PIECE")
+    name               String   @map("STR_NAME_FEATURED_PIECE")
+    imageUrl           String   @map("STR_IMAGE_URL_FEATURED_PIECE")
+    imageAlt           String   @map("STR_IMAGE_ALT_FEATURED_PIECE")
+    imageWidth         Int      @map("NUM_IMAGE_WIDTH_FEATURED_PIECE")
+    imageHeight        Int      @map("NUM_IMAGE_HEIGHT_FEATURED_PIECE")
+    primaryProductId   String   @map("UID_PRIMARY_PRODUCT")
+    secondaryProductId String   @map("UID_SECONDARY_PRODUCT")
+    sortOrder          Int      @default(0) @map("NUM_SORT_ORDER_FEATURED_PIECE")
+    isActive           Boolean  @default(true) @map("BOOL_IS_ACTIVE_FEATURED_PIECE")
+    createdAt          DateTime @default(now()) @map("DTM_CREATED_AT")
+    updatedAt          DateTime @updatedAt @map("DTM_UPDATED_AT")
+
+    primaryProduct   Product @relation("FeaturedPrimary", fields: [primaryProductId], references: [id])
+    secondaryProduct Product @relation("FeaturedSecondary", fields: [secondaryProductId], references: [id])
+
+    @@map("FEATURED_PIECE")
+}
+
+// ─── PROYECTOS (portafolio) ────────────────────────────────────────────────────
+
+enum ProjectImageRole {
+    GALLERY // foto del proyecto terminado
+    BEFORE  // restauración: cómo llegó
+    AFTER   // restauración: cómo quedó
+}
+
+model Project {
+    id          String    @id @default(uuid()) @map("UID_PROJECT")
+    numId       Int       @unique @default(autoincrement()) @map("NUM_ID_PROJECT")
+    title       String    @map("STR_TITLE_PROJECT")
+    slug        String    @unique @map("STR_SLUG_PROJECT")
+    type        String    @map("STR_TYPE_PROJECT")        // Portones, Barandas, Restauración…
+    summary     String    @map("STR_SUMMARY_PROJECT")
+    description String?   @map("STR_DESCRIPTION_PROJECT")
+    location    String?   @map("STR_LOCATION_PROJECT")
+    year        Int?      @map("NUM_YEAR_PROJECT")
+    isFeatured  Boolean   @default(false) @map("BOOL_IS_FEATURED_PROJECT")
+    isPublished Boolean   @default(false) @map("BOOL_IS_PUBLISHED_PROJECT")
+    sortOrder   Int       @default(0) @map("NUM_SORT_ORDER_PROJECT")
+    deletedAt   DateTime? @map("DTM_DELETED_AT_PROJECT")
+    createdAt   DateTime  @default(now()) @map("DTM_CREATED_AT")
+    updatedAt   DateTime  @updatedAt @map("DTM_UPDATED_AT")
+
+    images ProjectImage[]
+
+    @@index([isPublished, deletedAt])
+    @@map("PROJECT")
+}
+
+model ProjectImage {
+    id         String           @id @default(uuid()) @map("UID_PROJECT_IMAGE")
+    projectId  String           @map("UID_PROJECT")
+    role       ProjectImageRole @default(GALLERY) @map("STR_ROLE_PROJECT_IMAGE")
+    url        String           @map("STR_URL_PROJECT_IMAGE")
+    storageKey String?          @map("STR_STORAGE_KEY_PROJECT_IMAGE")
+    alt        String           @map("STR_ALT_PROJECT_IMAGE")
+    width      Int              @map("NUM_WIDTH_PROJECT_IMAGE")
+    height     Int              @map("NUM_HEIGHT_PROJECT_IMAGE")
+    sortOrder  Int              @default(0) @map("NUM_SORT_ORDER_PROJECT_IMAGE")
+    createdAt  DateTime         @default(now()) @map("DTM_CREATED_AT")
+
+    project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+    @@index([projectId])
+    @@map("PROJECT_IMAGE")
+}
+
+// ─── SOLICITUDES (contacto, cotización, diseño 3D) ─────────────────────────────
+
+enum QuoteKind {
+    CONTACT // mensaje desde /contact
+    QUOTE   // solicitud desde /quote
+    DESIGN  // diseño enviado desde el configurador 3D
+}
+
+enum QuoteStatus {
+    NEW
+    IN_PROGRESS
+    QUOTED
+    WON
+    LOST
+    ARCHIVED
+}
+
+model Quote {
+    id            String      @id @default(uuid()) @map("UID_QUOTE")
+    numId         Int         @unique @default(autoincrement()) @map("NUM_ID_QUOTE")
+    kind          QuoteKind   @map("STR_KIND_QUOTE")
+    status        QuoteStatus @default(NEW) @map("STR_STATUS_QUOTE")
+    name          String      @map("STR_NAME_QUOTE")
+    phone         String      @map("STR_PHONE_QUOTE")
+    email         String?     @map("STR_EMAIL_QUOTE")
+    city          String?     @map("STR_CITY_QUOTE")
+    projectType   String?     @map("STR_PROJECT_TYPE_QUOTE")
+    message       String?     @map("STR_MESSAGE_QUOTE")
+    widthCm       Int?        @map("NUM_WIDTH_CM_QUOTE")
+    heightCm      Int?        @map("NUM_HEIGHT_CM_QUOTE")
+    productSlug   String?     @map("STR_PRODUCT_SLUG_QUOTE")
+    design        Json?       @map("JSON_DESIGN_QUOTE")          // configuración del diseño 3D
+    estimateMin   Decimal?    @db.Decimal(12, 0) @map("NUM_ESTIMATE_MIN_QUOTE")
+    estimateMax   Decimal?    @db.Decimal(12, 0) @map("NUM_ESTIMATE_MAX_QUOTE")
+    preferredDate DateTime?   @map("DTM_PREFERRED_DATE_QUOTE")  // visita técnica sugerida
+    adminNotes    String?     @map("STR_ADMIN_NOTES_QUOTE")
+    consentAt     DateTime    @map("DTM_CONSENT_AT_QUOTE")      // aceptación de tratamiento de datos (Ley 1581)
+    deletedAt     DateTime?   @map("DTM_DELETED_AT_QUOTE")
+    createdAt     DateTime    @default(now()) @map("DTM_CREATED_AT")
+    updatedAt     DateTime    @updatedAt @map("DTM_UPDATED_AT")
+
+    attachments QuoteAttachment[]
+
+    @@index([status, deletedAt])
+    @@index([kind])
+    @@map("QUOTE")
+}
+
+model QuoteAttachment {
+    id         String   @id @default(uuid()) @map("UID_QUOTE_ATTACHMENT")
+    quoteId    String   @map("UID_QUOTE")
+    url        String   @map("STR_URL_QUOTE_ATTACHMENT")
+    storageKey String   @map("STR_STORAGE_KEY_QUOTE_ATTACHMENT")
+    width      Int      @map("NUM_WIDTH_QUOTE_ATTACHMENT")
+    height     Int      @map("NUM_HEIGHT_QUOTE_ATTACHMENT")
+    createdAt  DateTime @default(now()) @map("DTM_CREATED_AT")
+
+    quote Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+    @@index([quoteId])
+    @@map("QUOTE_ATTACHMENT")
+}
+
+// ─── AJUSTES (clave → JSON) ────────────────────────────────────────────────────
+// Ej.: "configurator.pricing" guarda las tarifas del configurador 3D
+
+model Setting {
+    key       String   @id @map("STR_KEY_SETTING")
+    value     Json     @map("JSON_VALUE_SETTING")
+    updatedAt DateTime @updatedAt @map("DTM_UPDATED_AT")
+
+    @@map("SETTING")
+}
